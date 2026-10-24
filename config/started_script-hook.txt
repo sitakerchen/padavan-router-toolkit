@@ -1,0 +1,8 @@
+# ============================================================
+# 把以下内容追加到 /etc/storage/started_script.sh 的末尾
+# ============================================================
+
+# RememberMe 前端服务（nginx :8080）
+[ -x /etc/storage/remember-me-start.sh ] && /etc/storage/remember-me-start.sh &
+# RememberMe 守护进程：U 盘掉线后自动等待并恢复服务
+[ -x /etc/storage/remember-me-watchdog.sh ] && /etc/storage/remember-me-watchdog.sh &

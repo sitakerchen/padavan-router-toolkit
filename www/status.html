@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>路由器状态</title>
+<style>
+  :root{--bg:#1a1b26;--card:#24283b;--fg:#c0caf5;--dim:#565f89;--ok:#9ece6a;--warn:#e0af68;--err:#f7768e;--bar:#7aa2f7}
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,"PingFang SC",sans-serif}
+  h1{font-size:18px;margin:0 0 20px;font-weight:600}
+  h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;max-width:1100px}
+  .card{background:var(--card);border-radius:10px;padding:16px}
+  .card h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:500;text-transform:uppercase;letter-spacing:.5px}
+  .row{display:flex;justify-content:space-between;margin:6px 0;font-variant-numeric:tabular-nums}
+  .row span:last-child{color:var(--fg);font-weight:500}
+  .row span:first-child{color:var(--dim)}
+  .bar{height:6px;background:#1f2335;border-radius:3px;overflow:hidden;margin:8px 0 12px}
+  .bar>i{display:block;height:100%;background:var(--bar);transition:width .4s,background .4s}
+  .bar>i.warn{background:var(--warn)}
+  .bar>i.err{background:var(--err)}
+  .svc{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--err)}
+  .dot.on{background:var(--ok)}
+  #err{color:var(--err);font-size:12px;margin-top:12px;display:none}
+</style>
+</head>
+<body>
+<h1>路由器状态 <small id="upd">加载中…</small></h1>
+<div class="grid">
+  <div class="card">
+    <h2>物理内存</h2>
+    <div class="bar"><i id="membar"></i></div>
+    <div class="row"><span>已用</span><span id="memused">—</span></div>
+    <div class="row"><span>可用</span><span id="memavail">—</span></div>
+    <div class="row"><span>总计</span><span id="memtotal">—</span></div>
+  </div>
+  <div class="card">
+    <h2>Swap</h2>
+    <div class="bar"><i id="swapbar"></i></div>
+    <div class="row"><span>已用</span><span id="swapused">—</span></div>
+    <div class="row"><span>可用</span><span id="swapfree">—</span></div>
+    <div class="row"><span>总计</span><span id="swaptotal">—</span></div>
+  </div>
+  <div class="card">
+    <h2>磁盘</h2>
+    <div class="bar"><i id="optbar"></i></div>
+    <div class="row"><span>Entware (2G)</span><span id="optused">—</span></div>
+    <div class="bar"><i id="databar"></i></div>
+    <div class="row"><span>Data (56G)</span><span id="dataused">—</span></div>
+  </div>
+  <div class="card">
+    <h2>服务</h2>
+    <div class="svc"><span class="dot" id="d-nginx"></span><span>nginx (8080)</span></div>
+    <div class="svc"><span class="dot" id="d-clash"></span><span>clash (7893)</span></div>
+    <div class="row" style="margin-top:16px"><span>平均负载</span><span id="load">—</span></div>
+    <div class="row"><span>运行时间</span><span id="uptime">—</span></div>
+  </div>
+</div>
+<div id="err"></div>
+<script>
+const KB = 1024;
+const mb = k => (k / KB).toFixed(1) + ' MB';
+const gb = k => (k / KB / KB).toFixed(2) + ' GB';
+
+function setBar(id, pct) {
+  const el = document.getElementById(id);
+  el.style.width = Math.min(100, pct).toFixed(1) + '%';
+  el.className = pct > 90 ? 'err' : pct > 75 ? 'warn' : '';
+}
+
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d > 0 ? `${d}天 ${h}小时` : h > 0 ? `${h}小时 ${m}分` : `${m}分钟`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch('status.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+
+    const memUsed = d.mem.total - d.mem.avail;
+    document.getElementById('memused').textContent = mb(memUsed);
+    document.getElementById('memavail').textContent = mb(d.mem.avail);
+    document.getElementById('memtotal').textContent = mb(d.mem.total);
+    setBar('membar', memUsed / d.mem.total * 100);
+
+    if (d.swap.total > 0) {
+      const swapUsed = d.swap.total - d.swap.free;
+      document.getElementById('swapused').textContent = mb(swapUsed);
+      document.getElementById('swapfree').textContent = mb(d.swap.free);
+      document.getElementById('swaptotal').textContent = mb(d.swap.total);
+      setBar('swapbar', swapUsed / d.swap.total * 100);
+    } else {
+      document.getElementById('swaptotal').textContent = '未启用';
+    }
+
+    const [ot, ou, of] = d.disk.opt, [dt, du, df] = d.disk.data;
+    document.getElementById('optused').textContent = `${mb(ou)} / ${gb(ot)}`;
+    document.getElementById('dataused').textContent = `${gb(du)} / ${gb(dt)}`;
+    setBar('optbar', ou / ot * 100);
+    setBar('databar', du / dt * 100);
+
+    document.getElementById('d-nginx').className = 'dot' + (d.svc.nginx ? ' on' : '');
+    document.getElementById('d-clash').className = 'dot' + (d.svc.clash ? ' on' : '');
+    document.getElementById('load').textContent = d.load.join(' / ');
+    document.getElementById('uptime').textContent = fmtUptime(d.uptime);
+
+    document.getElementById('upd').textContent = '更新于 ' + new Date(d.ts * 1000).toLocaleTimeString('zh-CN');
+    document.getElementById('err').style.display = 'none';
+  } catch (e) {
+    const el = document.getElementById('err');
+    el.textContent = '获取数据失败：' + e.message + '（status.json 每 30 秒刷新一次）';
+    el.style.display = 'block';
+  }
+}
+
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>
