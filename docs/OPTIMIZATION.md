@@ -383,3 +383,80 @@ fi
 ```
 
 这样即使固件覆盖了配置，守护进程下一轮（30 秒内）就会修正。
+
+---
+
+## 优化 6：订阅自动更新
+
+### 背景
+
+配置持久化后订阅不再自动更新。自己实现一个更新脚本，比固件的更可控。
+
+### 实现
+
+`scripts/clash-update.sh`，由 crontab 每 6 小时调用：
+
+```sh
+0 */6 * * * /etc/storage/clash-update.sh >/dev/null 2>&1
+```
+
+流程：
+
+1. 从 `nvram app_91` 读订阅链接
+2. `wget` 下载（失败则 `curl` 兜底）
+3. 校验含 `proxies:` 段
+4. 修正路由器需要的配置
+5. 写入 U 盘模板
+6. 重启 clash
+
+### 必须修正的配置
+
+订阅源是给电脑客户端用的，直接用于路由器会出问题：
+
+| 配置项 | 订阅原值 | 修正为 | 原因 |
+|---|---|---|---|
+| `allow-lan` | `false` | `true` | 否则局域网设备用不了 |
+| `external-controller` | `127.0.0.1:9090` | `192.168.123.1:27428` | 否则面板访问不到 |
+| `external-ui` | 无 | `clash_webs` | 否则 `/ui/` 返回 404 |
+| `secret` | `''`（空） | 从 nvram 读 | 空密钥有安全隐患 |
+| `log-level` | `silent` | `info` | 便于排查 |
+| `port`/`socks-port` | `7890`/`7891` | 删除 | 和固件冲突，统一用 `mixed-port` |
+| `geoip` | `true` | `false` | 触发 GeoSite 加载，吃 50MB 内存 |
+| `geosite:*` | 有 | 删除 | 触发从 GitHub 下载，国内超时导致启动失败 |
+
+### 最大的坑：geosite 导致启动失败
+
+新订阅的 DNS 配置里有：
+
+```yaml
+dns:
+  nameserver-policy:
+    'geosite:cn': 119.29.29.29
+    'geosite:geolocation-!cn': 8.8.8.8
+```
+
+这会让 mihomo 去 GitHub 下载 `GeoSite.dat`（4.1MB），国内网络超时后直接 fatal：
+
+```
+can't download GeoSite.dat: Get "https://github.com/MetaCubeX/meta-rules-dat/..."
+  read: connection timed out
+Parse config error: can't download GeoSite.dat
+```
+
+**注意**：规则里没有 `GEOSITE,` 也会触发，因为 DNS 的 `nameserver-policy` 引用了 `geosite:`。
+
+修复：
+
+```sh
+sed -i "/'geosite:cn'/d; /'geosite:geolocation-!cn'/d" "$TMP"
+sed -i "/GEOSITE,/d" "$TMP"
+```
+
+### 结果
+
+| 指标 | 值 |
+|---|---|
+| 更新周期 | 6 小时 |
+| 节点数 | 82 |
+| 更新耗时 | ~5 秒（下载 + 重启） |
+| 失败处理 | 保留现有配置，不重启 |
