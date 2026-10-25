@@ -62,38 +62,60 @@ ensure_services() {
         fi
     fi
 
-    # clash：先确认配置就绪再启动（避免读到默认空配置）
+    # clash：配置从 U 盘模板恢复，不等固件生成
     if [ "$(nvram get clash_enable 2>/dev/null)" = "1" ] && [ -x /opt/bin/clash ]; then
-        CLASH_CFG=/opt/app/clash/config/config.yaml
+        CLASH_DIR=/opt/app/clash/config
+        CLASH_CFG=$CLASH_DIR/config.yaml
+        CLASH_TPL=/media/opt/app/clash/config/config.yaml.persist
+        MMDB_TPL=/media/opt/app/clash/config/geoip.metadb
+
+        mkdir -p "$CLASH_DIR"
+
+        # 1. 配置缺失时从 U 盘模板恢复（省去等固件生成的 1-2 分钟）
         if [ ! -s "$CLASH_CFG" ] || ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
-            clash_wait=$(( ${clash_wait:-0} + 1 ))
-            if [ "$clash_wait" -ge 6 ]; then
-                log "配置等待超时，主动触发固件生成"
-                /etc/storage/script/Sh10_clash.sh restart >/dev/null 2>&1 &
-                clash_wait=0
+            if [ -s "$CLASH_TPL" ]; then
+                cp -f "$CLASH_TPL" "$CLASH_CFG"
+                log "已从 U 盘模板恢复 clash 配置"
             else
-                log "clash 配置未就绪，等待固件生成 ($clash_wait/6)"
+                clash_wait=$(( ${clash_wait:-0} + 1 ))
+                if [ "$clash_wait" -ge 6 ]; then
+                    log "无模板且配置未就绪，触发固件生成"
+                    /etc/storage/script/Sh10_clash.sh restart >/dev/null 2>&1 &
+                    clash_wait=0
+                else
+                    log "clash 配置未就绪 ($clash_wait/6)"
+                fi
             fi
-        else
-            # 确保 GeoSite 优化没被订阅更新覆盖
+        fi
+
+        # 2. 配置就绪后：修正 geoip、恢复 MMDB、管理进程
+        if [ -s "$CLASH_CFG" ] && grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
             if grep -q "^    geoip: true" "$CLASH_CFG" 2>/dev/null; then
                 sed -i "s|^    geoip: true|    geoip: false|" "$CLASH_CFG"
                 log "已重新应用 geoip 优化"
             fi
-            # MMDB 持久化在 U 盘，缺失时恢复（GitHub 下载会超时）
-            if [ ! -f /opt/app/clash/config/geoip.metadb ] && [ -f /media/Data/clash-data/geoip.metadb ]; then
-                cp /media/Data/clash-data/geoip.metadb /opt/app/clash/config/geoip.metadb
+
+            if [ ! -f "$CLASH_DIR/geoip.metadb" ] && [ -f "$MMDB_TPL" ]; then
+                cp -f "$MMDB_TPL" "$CLASH_DIR/geoip.metadb"
                 log "已从 U 盘恢复 MMDB"
             fi
+
+            # 启动前再确认一次配置完整（防止和固件生成配置的竞态）
+            if ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
+                log "配置在启动前丢失，跳过本轮"
+            else
             clash_count=$(ps | grep "[c]lash -d" | grep -v grep | wc -l)
             if [ "$clash_count" -eq 0 ]; then
                 log "clash 未运行，启动"
-                nohup /opt/bin/clash -d /opt/app/clash/config >/tmp/clash.log 2>&1 < /dev/null &
+                sync
+                sleep 2
+                nohup /opt/bin/clash -d "$CLASH_DIR" >/tmp/clash.log 2>&1 < /dev/null &
             elif [ "$clash_count" -gt 1 ]; then
                 log "清理 $clash_count 个 clash 实例"
                 for p in $(ps | grep "[c]lash -d" | grep -v grep | cut -c1-5 | tail -n +2); do
                     kill -9 "$p" 2>/dev/null
                 done
+            fi
             fi
         fi
     fi

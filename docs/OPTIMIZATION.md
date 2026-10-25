@@ -256,3 +256,94 @@ fi
 | 代理吞吐（trojan/AES） | ~20-40 Mbps |
 | nginx 静态文件 | 受限于 U 盘 IO |
 | clash 启动 | 0.56 秒 |
+
+---
+
+## 优化 5：clash 配置持久化，跳过固件生成
+
+### 问题
+
+冷复位后 clash 恢复要等 3 分钟：
+
+```
+[11:24:06] clash 配置未就绪，等待固件生成 (1/6)
+[11:24:36] clash 配置未就绪，等待固件生成 (2/6)
+...
+[11:25:07] 已从 U 盘恢复 MMDB
+[11:25:37] 已重新应用 geoip 优化
+```
+
+固件生成 `config.yaml` 需要下载订阅、用 yq 改写配置，在单核 CPU 上要 1-2 分钟。
+
+### 方案
+
+把**已生成的配置**存到 U 盘当模板，启动时直接复制：
+
+```sh
+# 保存当前配置作为模板
+cp /opt/app/clash/config/config.yaml \
+   /media/opt/app/clash/config/config.yaml.persist
+```
+
+守护进程优先用模板：
+
+```sh
+CLASH_TPL=/media/opt/app/clash/config/config.yaml.persist
+
+if [ ! -s "$CLASH_CFG" ] || ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
+    if [ -s "$CLASH_TPL" ]; then
+        cp -f "$CLASH_TPL" "$CLASH_CFG"
+        log "已从 U 盘模板恢复 clash 配置"
+    else
+        # 没模板才等固件生成
+        ...
+    fi
+fi
+```
+
+### 为什么不用订阅源 `/etc/storage/app_20.sh`
+
+订阅源缺少路由器需要的配置，固件会用 `yq` 改写：
+
+| 配置项 | 订阅源 | 路由器需要 |
+|---|---|---|
+| `allow-lan` | `false` | `true` |
+| `mixed-port` | 无 | `7893` |
+| `external-controller` | `127.0.0.1:9090` | `192.168.123.1:27428` |
+| `log-level` | `silent` | `info` |
+
+所以必须用**已生成的配置**（固件改写后的），不能用原始订阅。
+
+### 踩过的坑
+
+**坑 1：clash 启动太快，读到空配置**
+
+配置恢复和 clash 启动有竞态。加 `sync` + `sleep 2`：
+
+```sh
+sync
+sleep 2
+nohup /opt/bin/clash -d "$CLASH_DIR" >/tmp/clash.log 2>&1 < /dev/null &
+```
+
+**坑 2：启动前必须再检查一次配置**
+
+即使在恢复逻辑之后，配置仍可能被固件的并发操作删掉。启动前再确认：
+
+```sh
+if ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
+    log "配置在启动前丢失，跳过本轮"
+else
+    # 启动 clash
+fi
+```
+
+### 结果
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| 冷复位后 clash 可用 | ~3 分钟 | **~45 秒** |
+| 依赖固件生成配置 | 是 | 否（有模板时） |
+| 订阅更新 | 自动 | 需手动触发 |
+
+**代价**：订阅不会自动更新。需要更新时在后台点「更新订阅」，或者删除模板让固件重新生成。
