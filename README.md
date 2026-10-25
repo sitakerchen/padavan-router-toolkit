@@ -31,6 +31,9 @@
 | clash 启动要 87 秒、吃 105MB 内存 | 关掉 `fallback-filter.geoip` | **0.56 秒 / 64MB** |
 | 内存不足 | 128MB swap 文件 | 防止 OOM |
 
+**冷启动恢复时间**（重启后各服务可用）：网站 41 秒，代理 53 秒，面板 54 秒。
+详见 [docs/RECOVERY-BENCHMARK.md](docs/RECOVERY-BENCHMARK.md)。
+
 ## 目录结构
 
 ```
@@ -51,7 +54,8 @@
 └── docs/
     ├── ARCHITECTURE.md         架构与挂载原理
     ├── TROUBLESHOOTING.md      故障排查
-    └── OPTIMIZATION.md         性能优化记录
+    ├── OPTIMIZATION.md         性能优化记录
+    └── RECOVERY-BENCHMARK.md   冷启动恢复时间基准
 ```
 
 ## 快速开始
