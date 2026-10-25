@@ -71,11 +71,19 @@ ensure_services() {
 
         mkdir -p "$CLASH_DIR"
 
-        # 1. 配置缺失时从 U 盘模板恢复（省去等固件生成的 1-2 分钟）
-        if [ ! -s "$CLASH_CFG" ] || ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
+        # 1. 配置缺失或关键字段不对时，从 U 盘模板恢复
+        #    不能只看文件是否存在：固件可能用原始订阅覆盖（external-controller 变成 127.0.0.1）
+        cfg_bad=0
+        [ ! -s "$CLASH_CFG" ] && cfg_bad=1
+        grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+        grep -q "^external-controller: 192.168.123.1" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+        grep -q "^allow-lan: true" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+        grep -q "^mixed-port: 7893" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+
+        if [ "$cfg_bad" = "1" ]; then
             if [ -s "$CLASH_TPL" ]; then
                 cp -f "$CLASH_TPL" "$CLASH_CFG"
-                log "已从 U 盘模板恢复 clash 配置"
+                log "clash 配置无效或缺失，已从 U 盘模板恢复"
             else
                 clash_wait=$(( ${clash_wait:-0} + 1 ))
                 if [ "$clash_wait" -ge 6 ]; then
@@ -101,8 +109,8 @@ ensure_services() {
             fi
 
             # 启动前再确认一次配置完整（防止和固件生成配置的竞态）
-            if ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
-                log "配置在启动前丢失，跳过本轮"
+            if ! grep -q "^external-controller: 192.168.123.1" "$CLASH_CFG" 2>/dev/null; then
+                log "配置在启动前被覆盖，跳过本轮"
             else
             clash_count=$(ps | grep "[c]lash -d" | grep -v grep | wc -l)
             if [ "$clash_count" -eq 0 ]; then

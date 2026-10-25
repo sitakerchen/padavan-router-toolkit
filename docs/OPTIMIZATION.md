@@ -347,3 +347,39 @@ fi
 | 订阅更新 | 自动 | 需手动触发 |
 
 **代价**：订阅不会自动更新。需要更新时在后台点「更新订阅」，或者删除模板让固件重新生成。
+
+### 坑 3：配置存在但内容错误
+
+**现象**
+
+重启后代理正常（7893 通），但面板 27428 不监听。检查配置：
+
+```sh
+$ grep external-controller /opt/app/clash/config/config.yaml
+external-controller: '127.0.0.1:9090'    ← 订阅源的原始值
+```
+
+**原因**
+
+守护进程只检查「配置文件是否存在」，但固件可能在重启前用原始订阅覆盖了它。
+文件存在、`proxies:` 段也在，但 `external-controller`、`allow-lan`、`mixed-port` 都是订阅源的默认值。
+
+**修复**
+
+校验关键字段，不匹配就恢复模板：
+
+```sh
+cfg_bad=0
+[ ! -s "$CLASH_CFG" ] && cfg_bad=1
+grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+grep -q "^external-controller: 192.168.123.1" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+grep -q "^allow-lan: true" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+grep -q "^mixed-port: 7893" "$CLASH_CFG" 2>/dev/null || cfg_bad=1
+
+if [ "$cfg_bad" = "1" ]; then
+    cp -f "$CLASH_TPL" "$CLASH_CFG"
+    log "clash 配置无效或缺失，已从 U 盘模板恢复"
+fi
+```
+
+这样即使固件覆盖了配置，守护进程下一轮（30 秒内）就会修正。
