@@ -161,3 +161,101 @@ mountpoint -q /opt || mount -t tmpfs -o size=62464k tmpfs /opt
 - 修改后立即 `save`
 - 保存后用 `ls -la /etc/storage/` 确认文件还在
 - 重要配置在 U 盘上留一份备份
+
+## 在路由器后台添加自定义菜单项
+
+Padavan 后台的左侧菜单由 `/etc/storage/www_sh/` 目录下的脚本动态注册。
+
+### 机制
+
+1. `menu_title.sh` 里的 `menu_title_all` 变量列出所有允许的菜单名
+2. `run_www_sh()` 遍历 `menuN_titleM` nvram 槽位
+3. 如果槽位的值在 `menu_title_all` 里，且 `www_sh/<值>` 文件存在，就执行它
+4. 脚本里的 `nvram set tablink<编号>=<页面>` 注册链接
+
+**槽位编号规则**：`menu{列}_{行}` → `tablink{列}{行}`
+例如 `menu12_title4` → `tablink124`
+
+### 添加步骤
+
+**1. 准备页面**
+
+固件的 `/www` 是只读分区，需要把自定义页面 bind mount 上去：
+
+```sh
+mkdir -p /media/opt/app/status
+# 把页面放到 /media/opt/app/status/Advanced_Extensions_status.asp
+umount /www/Advanced_Extensions_app30.asp 2>/dev/null
+mount --bind /media/opt/app/status/Advanced_Extensions_status.asp \
+              /www/Advanced_Extensions_app30.asp
+```
+
+**2. 创建菜单脚本** `/etc/storage/www_sh/系统状态`
+
+```bash
+#!/bin/bash
+source /etc/storage/script/init.sh
+
+link="Advanced_Extensions_app30.asp"
+
+if [ "$1"x = "stop"x ] ; then
+    exit
+fi
+
+if [ "$1" != "del" ] ; then
+    eval 'nvram set tablink'$1'='$link';'
+    nvram set status_L2="$(($3 + 10))"
+    nvram set status_L3="$2"
+fi
+
+if [ -f /media/opt/app/status/Advanced_Extensions_status.asp ]; then
+    umount /www/Advanced_Extensions_app30.asp 2>/dev/null
+    mount --bind /media/opt/app/status/Advanced_Extensions_status.asp \
+                  /www/Advanced_Extensions_app30.asp 2>/dev/null
+fi
+```
+
+**3. 把菜单名加进 `menu_title_all`**
+
+编辑 `/etc/storage/www_sh/menu_title.sh`，在 `menu_title5` 末尾追加：
+
+```sh
+menu_title5="... clash 系统状态"
+```
+
+**4. 设置 nvram 槽位并注册**
+
+```sh
+nvram set menu12_title4="系统状态"
+/etc/storage/www_sh/系统状态 124 12 4
+```
+
+**5. 持久化**
+
+```sh
+/sbin/mtd_storage.sh save
+```
+
+启动脚本末尾已包含步骤 4，重启自动恢复。
+
+### 踩过的坑
+
+**坑 1：`menu_title.sh re` 会清空所有槽位**
+
+`re` 参数会先执行 `title_init`（把所有 `menuN_titleM` 设为空），再重新填充。
+如果手动设置了槽位后执行 `re`，设置会丢失。
+
+用 `check` 代替，或者直接执行菜单脚本。
+
+**坑 2：`check_www_sh` 会删除未注册的菜单文件**
+
+```sh
+for file in `ls -L /etc/storage/www_sh/`
+do
+if [ -z "$(echo "$menu_title_set" | grep "$file")" ] ; then
+    /etc/storage/www_sh/$file stop
+fi
+done
+```
+
+所以必须先在 nvram 里注册槽位，脚本才不会被清理。
