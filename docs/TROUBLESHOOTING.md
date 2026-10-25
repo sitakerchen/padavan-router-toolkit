@@ -270,3 +270,138 @@ kill $(cat /opt/var/run/nginx-remember-me.pid)
 # 保存配置到 flash
 /sbin/mtd_storage.sh save
 ```
+
+---
+
+## 冷复位后 clash 起不来（MMDB 下载超时）
+
+**现象**
+
+clash 进程在跑但端口不监听，或者直接退出。日志：
+
+```
+Can't find MMDB, start download
+can't download MMDB: Get "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb":
+  read tcp ...: connection timed out
+Parse config error: rules[1273] [GEOIP,CN,❌不代理] error: can't download MMDB
+```
+
+**原因**
+
+1. `GEOIP,CN` 规则需要 MMDB 数据库
+2. 冷复位后 `/opt/app`（tmpfs）被清空，MMDB 丢失
+3. clash 尝试从 GitHub 下载，但**国内网络访问 GitHub 超时**
+
+**修复**
+
+在本机下载后上传（本机通常能访问 GitHub）：
+
+```bash
+# 本机
+curl -sL -o geoip.metadb \
+  "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+
+# 上传到 U 盘持久化位置
+scp geoip.metadb admin@192.168.123.1:/media/opt/app/clash/config/
+```
+
+**永久修复**
+
+把 `/opt/app` 整个 bind mount 到 U 盘（启动脚本已包含）：
+
+```sh
+mkdir -p /opt/app $ENTWARE_MNT/app
+mountpoint -q /opt/app || mount -o bind $ENTWARE_MNT/app /opt/app
+```
+
+这样 MMDB 和配置都持久化，冷复位后不用重新下载。
+
+---
+
+## /opt/app 被清空（配置丢失）
+
+**现象**
+
+clash 在跑但 `/opt/app/clash/config/config.yaml` 不存在，或者配置文件被重置。
+
+**原因**
+
+启动脚本里这段代码**无条件卸载 `/opt`**：
+
+```sh
+if mountpoint -q /opt; then
+    umount -l /opt        # ← 即使 /opt 是正常的 tmpfs 也会卸载
+fi
+mountpoint -q /opt || mount -t tmpfs -o size=62464k tmpfs /opt
+```
+
+卸载 tmpfs 后重新挂载，`/opt/app` 就没了。
+
+**修复**
+
+只在 `/opt` 被 **ext4 错误挂载**时才卸载：
+
+```sh
+if mount | grep -q "^/dev/sd.* on /opt "; then
+    umount -l /opt
+fi
+```
+
+---
+
+## 守护进程重复启动
+
+**现象**
+
+`ps | grep remember-me-watchdog` 显示多个实例。
+
+**原因**
+
+PID 文件方案有竞态：`pkill` 后旧 PID 可能被新进程复用。
+
+**修复**
+
+改用 `flock` 文件锁：
+
+```sh
+LOCKFILE=/tmp/remember-me-watchdog.lock
+exec 9>$LOCKFILE
+if ! flock -n 9; then
+    echo "[watchdog] 已有实例在运行，退出" >> /tmp/remember-me.log
+    exit 0
+fi
+```
+
+---
+
+## clash 配置被固件覆盖（geoip 又变回 true）
+
+**现象**
+
+手动改了 `config.yaml` 的 `geoip: false`，重启 clash 后又变回 `true`。
+
+**原因**
+
+固件脚本 `/etc/storage/script/Sh10_clash.sh` 第 586 行**硬编码**了 DNS 模板：
+
+```yaml
+  fallback-filter:
+    geoip: true          # ← 每次生成配置都会写这个值
+```
+
+**修复**
+
+直接改固件脚本（这是唯一可靠的方式）：
+
+```sh
+# 备份
+cp /etc/storage/script/Sh10_clash.sh /media/Data/Sh10_clash.sh.bak
+
+# 修改
+sed -i '586s|    geoip: true|    geoip: false|' /etc/storage/script/Sh10_clash.sh
+
+# 持久化
+/sbin/mtd_storage.sh save
+```
+
+守护进程也会在检测到 `geoip: true` 时自动修正，但改固件脚本更彻底。

@@ -57,7 +57,7 @@ done
 for d in bin lib sbin usr var share; do
     mount | grep -q " on /opt/$d " && umount -l /opt/$d 2>/dev/null
 done
-if mountpoint -q /opt; then
+if mount | grep -q "^/dev/sd.* on /opt "; then
     umount -l /opt 2>/dev/null
     log "已移除固件在 /opt 上的错误挂载"
 fi
@@ -79,6 +79,10 @@ for d in bin lib sbin usr var share; do
     mkdir -p /opt/$d
     mountpoint -q /opt/$d || mount -o bind $ENTWARE_MNT/$d /opt/$d
 done
+
+# clash 配置目录持久化（避免冷复位后丢失，GitHub 下载 MMDB 会超时）
+mkdir -p /opt/app $ENTWARE_MNT/app
+mountpoint -q /opt/app || mount -o bind $ENTWARE_MNT/app /opt/app
 mkdir -p /opt/etc /opt/tmp /opt/var/log/nginx /opt/var/run
 cp -f /etc/passwd /opt/etc/passwd 2>/dev/null
 cp -f /etc/group  /opt/etc/group  2>/dev/null

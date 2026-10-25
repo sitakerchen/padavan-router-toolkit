@@ -12,7 +12,14 @@
 LOG=/tmp/remember-me.log
 log() { echo "[$(date '+%F %T')] [watchdog] $*" >> $LOG; }
 
-# 分区 UUID（比设备名稳定，U 盘重新枚举后 sda 可能变成 sdb）
+
+# 单例保护：用 flock 文件锁（比 PID 文件可靠）
+LOCKFILE=/tmp/remember-me-watchdog.lock
+exec 9>$LOCKFILE
+if ! flock -n 9; then
+    echo "[watchdog] 已有实例在运行，退出" >> /tmp/remember-me.log
+    exit 0
+fi
 OPT_UUID=6637de50-514f-4270-9309-5edc2f3d388b
 DATA_UUID=aab01a63-4fc6-4026-b709-ec16c4e596e2
 
@@ -55,17 +62,39 @@ ensure_services() {
         fi
     fi
 
-    # clash：用端口检测更可靠（pidof 在进程冲突时会误判）
+    # clash：先确认配置就绪再启动（避免读到默认空配置）
     if [ "$(nvram get clash_enable 2>/dev/null)" = "1" ] && [ -x /opt/bin/clash ]; then
-        clash_count=$(pgrep -f "clash -d" 2>/dev/null | wc -l)
-        if [ "$clash_count" -eq 0 ]; then
-            log "clash 未运行，启动"
-            nohup /opt/bin/clash -d /opt/app/clash/config >/tmp/clash.log 2>&1 < /dev/null &
-        elif [ "$clash_count" -gt 1 ]; then
-            log "检测到 $clash_count 个 clash 实例，清理多余进程"
-            for p in $(pgrep -f "clash -d" | tail -n +2); do
-                kill -9 "$p" 2>/dev/null
-            done
+        CLASH_CFG=/opt/app/clash/config/config.yaml
+        if [ ! -s "$CLASH_CFG" ] || ! grep -q "^proxies:" "$CLASH_CFG" 2>/dev/null; then
+            clash_wait=$(( ${clash_wait:-0} + 1 ))
+            if [ "$clash_wait" -ge 6 ]; then
+                log "配置等待超时，主动触发固件生成"
+                /etc/storage/script/Sh10_clash.sh restart >/dev/null 2>&1 &
+                clash_wait=0
+            else
+                log "clash 配置未就绪，等待固件生成 ($clash_wait/6)"
+            fi
+        else
+            # 确保 GeoSite 优化没被订阅更新覆盖
+            if grep -q "^    geoip: true" "$CLASH_CFG" 2>/dev/null; then
+                sed -i "s|^    geoip: true|    geoip: false|" "$CLASH_CFG"
+                log "已重新应用 geoip 优化"
+            fi
+            # MMDB 持久化在 U 盘，缺失时恢复（GitHub 下载会超时）
+            if [ ! -f /opt/app/clash/config/geoip.metadb ] && [ -f /media/Data/clash-data/geoip.metadb ]; then
+                cp /media/Data/clash-data/geoip.metadb /opt/app/clash/config/geoip.metadb
+                log "已从 U 盘恢复 MMDB"
+            fi
+            clash_count=$(pgrep -f "clash -d" 2>/dev/null | wc -l)
+            if [ "$clash_count" -eq 0 ]; then
+                log "clash 未运行，启动"
+                nohup /opt/bin/clash -d /opt/app/clash/config >/tmp/clash.log 2>&1 < /dev/null &
+            elif [ "$clash_count" -gt 1 ]; then
+                log "清理 $clash_count 个 clash 实例"
+                for p in $(pgrep -f "clash -d" | tail -n +2); do
+                    kill -9 "$p" 2>/dev/null
+                done
+            fi
         fi
     fi
 
