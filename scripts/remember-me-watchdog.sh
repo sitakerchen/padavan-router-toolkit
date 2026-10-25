@@ -85,13 +85,13 @@ ensure_services() {
                 cp /media/Data/clash-data/geoip.metadb /opt/app/clash/config/geoip.metadb
                 log "已从 U 盘恢复 MMDB"
             fi
-            clash_count=$(pgrep -f "clash -d" 2>/dev/null | wc -l)
+            clash_count=$(ps | grep "[c]lash -d" | grep -v grep | wc -l)
             if [ "$clash_count" -eq 0 ]; then
                 log "clash 未运行，启动"
                 nohup /opt/bin/clash -d /opt/app/clash/config >/tmp/clash.log 2>&1 < /dev/null &
             elif [ "$clash_count" -gt 1 ]; then
                 log "清理 $clash_count 个 clash 实例"
-                for p in $(pgrep -f "clash -d" | tail -n +2); do
+                for p in $(ps | grep "[c]lash -d" | grep -v grep | cut -c1-5 | tail -n +2); do
                     kill -9 "$p" 2>/dev/null
                 done
             fi

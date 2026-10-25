@@ -452,3 +452,64 @@ curl -H "Authorization: Bearer <secret>" http://192.168.123.1:27428/version
 | 密钥 | `nvram get clash_secret` 或配置文件里的 `secret:` |
 
 默认值是 `127.0.0.1:9090`，必须改掉。
+
+---
+
+## 守护进程自杀（清理 clash 时把自己杀了）
+
+**现象**
+
+守护进程日志停在「清理 N 个 clash 实例」后就没动静，进程消失，nginx 也没了。
+
+**原因**
+
+`pgrep -f "clash -d"` 会匹配到**执行 pgrep 的那条命令本身**（命令行里含 `clash -d` 字符串）：
+
+```sh
+$ pgrep -f "clash -d"
+12687
+13934      ← 这是 pgrep 自己
+```
+
+守护进程用 `tail -n +2` 想跳过第一个，但实际杀掉了自己。
+
+**修复**
+
+用 `ps | grep "[c]lash -d"` 代替 `pgrep -f`：
+
+```sh
+# 方括号技巧：grep 自身命令行是 "[c]lash -d"，不匹配模式 "[c]lash -d"
+clash_count=$(ps | grep "[c]lash -d" | grep -v grep | wc -l)
+
+for p in $(ps | grep "[c]lash -d" | grep -v grep | cut -c1-5 | tail -n +2); do
+    kill -9 "$p" 2>/dev/null
+done
+```
+
+`[c]lash` 的关键在于：grep 进程的命令行是 `grep [c]lash -d`，而模式 `[c]lash -d` 匹配的是 `clash -d`，不匹配 `[c]lash -d`。
+
+---
+
+## 守护进程用 nohup 启动后消失
+
+**现象**
+
+```sh
+ssh admin@192.168.123.1 'nohup /etc/storage/remember-me-watchdog.sh &'
+```
+
+SSH 断开后进程就没了。
+
+**原因**
+
+dropbear 在会话结束时会给整个进程组发 SIGHUP，`nohup` 只忽略 SIGHUP 信号，但进程组仍被清理。路由器上没有 `setsid`。
+
+**修复**
+
+用 crontab 启动（每分钟检查一次，有 flock 保护不会重复）：
+
+```sh
+(crontab -l 2>/dev/null; echo "* * * * * /etc/storage/remember-me-watchdog.sh >/dev/null 2>&1") | crontab -
+```
+
+这样即使守护进程被杀，最多 1 分钟后自动恢复。
