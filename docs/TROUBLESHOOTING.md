@@ -405,3 +405,50 @@ sed -i '586s|    geoip: true|    geoip: false|' /etc/storage/script/Sh10_clash.s
 ```
 
 守护进程也会在检测到 `geoip: true` 时自动修正，但改固件脚本更彻底。
+
+---
+
+## Clash 面板端口 27428 不监听
+
+**现象**
+
+代理正常（7893 可用），但 `netstat -ln | grep 27428` 无输出，面板打不开。
+
+**原因**
+
+固件的 `Sh10_clash.sh` 会在后台重启 clash（探测版本、更新订阅等），与手动启动的进程冲突。日志里能看到：
+
+```
+External UI downloading ...
+```
+
+clash 在下载 Web UI 时被固件脚本杀掉，端口没来得及绑定。
+
+**修复**
+
+等固件脚本跑完（约 1-2 分钟），或者手动重启：
+
+```sh
+pkill -9 -f "clash -d"
+sleep 3
+nohup /opt/bin/clash -d /opt/app/clash/config > /tmp/clash.log 2>&1 &
+```
+
+**验证**
+
+```sh
+netstat -ln | grep 27428
+curl -H "Authorization: Bearer <secret>" http://192.168.123.1:27428/version
+# 期望: {"meta":true,"version":"v1.19.28"}
+```
+
+**面板首次连接**
+
+打开 `http://192.168.123.1:27428/ui/` 后需要填：
+
+| 字段 | 值 |
+|---|---|
+| 后端地址 | `http://192.168.123.1:27428` |
+| 密钥 | `nvram get clash_secret` 或配置文件里的 `secret:` |
+
+默认值是 `127.0.0.1:9090`，必须改掉。
